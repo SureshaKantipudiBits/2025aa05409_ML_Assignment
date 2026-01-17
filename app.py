@@ -79,7 +79,7 @@ def to_1d_int(arr) -> np.ndarray:
 # -------------------------
 models = {
     "Decision Tree Classifier": load_model(resolve_model_path("Model/decision_tree_classifier.pkl")),
-    "Random Forest Classifier": load_model(resolve_model_path("Model/random_forest_classifier.pkl")),
+   #"Random Forest Classifier": load_model(resolve_model_path("Model/random_forest_classifier.pkl")),#
     "Naive Bayes Classifier": load_model(resolve_model_path("Model/naive_bayes_classifier.pkl")),
     "XGBoost Classifier": load_model(resolve_model_path("Model/xgboost_classifier.pkl")),
     "K-Nearest Neighbor Classifier": load_model(resolve_model_path("Model/k-nearest_neighbor_classifier.pkl")),
