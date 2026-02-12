@@ -1,12 +1,14 @@
-
-import pickle
-from pathlib import Path
-import io
-import csv
-import numpy as np
+# =====================================================
+# ML MODEL EVALUATOR - FINAL PROFESSIONAL VERSION
+# =====================================================
 
 import streamlit as st
 import pandas as pd
+import numpy as np
+import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -14,266 +16,325 @@ from sklearn.metrics import (
     f1_score,
     classification_report,
     confusion_matrix,
-    ConfusionMatrixDisplay,
-    roc_auc_score, # Added AUC Score import
-    matthews_corrcoef, # Added MCC Score import
+    roc_auc_score,
+    roc_curve,
+    matthews_corrcoef,
 )
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler
 
+# -----------------------------------------------------
+# PAGE CONFIG
+# -----------------------------------------------------
+st.set_page_config(
+    page_title="ML Model Evaluator",
+    layout="wide",
+    page_icon="📊"
+)
 
-# -------------------------
-# Helpers
-# -------------------------
-@st.cache_resource
-def load_model(model_path: str):
-    """Loads a machine learning model from a pickle file."""
-    with open(model_path, "rb") as file:
-        model = pickle.load(file)
-    return model
+# -----------------------------------------------------
+# PROFESSIONAL UI STYLING (Font + Colors + Tabs)
+# -----------------------------------------------------
+st.markdown("""
+<style>
 
-
-def resolve_model_path(path_str: str) -> str:
-    """
-    Tries the given path first (e.g., '/content/..' from Colab).
-    If it doesn't exist, falls back to a file with the same name in the app folder.
-    """
-    p = Path(path_str)
-    if p.exists():
-        return str(p)
-
-    app_dir = Path(__file__).resolve().parent
-    fallback = app_dir / p.name
-    return str(fallback)
-
-
-def read_uploaded_csv(uploaded_file) -> pd.DataFrame:
-    """Reads an uploaded CSV robustly (auto-detects delimiter)."""
-    raw = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-
-    # First try comma. If it looks like a single-column file, try auto-sniff / semicolon.
-    df = pd.read_csv(io.StringIO(raw))
-    if df.shape[1] >= 2:
-        return df
-
-    # Try sniffer with common delimiters
-    try:
-        dialect = csv.Sniffer().sniff(raw[:4096], delimiters=[",", ";", "\t", "|"])
-        df2 = pd.read_csv(io.StringIO(raw), sep=dialect.delimiter)
-        if df2.shape[1] >= 2:
-            return df2
-    except Exception:
-        pass
-
-    # Final fallback: semicolon (common for bank-full.csv)
-    return pd.read_csv(io.StringIO(raw), sep=";")
-
-
-def to_1d_int(arr) -> np.ndarray:
-    """Ensures 1D integer numpy array."""
-    return np.asarray(arr).astype(int).ravel()
-
-
-# -------------------------
-# Models
-# -------------------------
-models = {
-    "Decision Tree Classifier": load_model(resolve_model_path("Model/decision_tree_classifier.pkl")),
-   #"Random Forest Classifier": load_model(resolve_model_path("Model/random_forest_classifier.pkl")),#
-    "Naive Bayes Classifier": load_model(resolve_model_path("Model/naive_bayes_classifier.pkl")),
-    "XGBoost Classifier": load_model(resolve_model_path("Model/xgboost_classifier.pkl")),
-    "K-Nearest Neighbor Classifier": load_model(resolve_model_path("Model/k-nearest_neighbor_classifier.pkl")),
-    "Logistic Regression": load_model(resolve_model_path("Model/logistic_regression.pkl")),
+/* Background */
+.main {
+    background-color: #f4f6f9;
 }
 
-# -------------------------
-# Streamlit UI
-# -------------------------
-st.title("Machine Learning Model Evaluator")
-st.write("Upload a CSV file, select a pre-trained model, and evaluate its performance.")
+/* Main Title */
+h1 {
+    font-size: 56px !important;
+    font-weight: 700 !important;
+    color: #0d47a1;
+}
 
-uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+/* Subheadings */
+h2, h3 {
+    font-size: 32px !important;
+    font-weight: 600 !important;
+    color: #1a237e;
+}
 
-model_names = list(models.keys())
-selected_model_name = st.selectbox("Select a Model for Prediction", model_names)
+/* General Text */
+p, div, span, label {
+    font-size: 20px !important;
+}
 
-run_prediction_button = st.button("Run Prediction")
+/* Metric Cards */
+div[data-testid="metric-container"] {
+    background-color: #ffffff;
+    border-radius: 12px;
+    padding: 18px;
+    box-shadow: 0px 4px 10px rgba(0,0,0,0.08);
+}
 
-st.info("Once you've uploaded your data and selected a model, click 'Run Prediction' to see the results.")
+/* Metric Label */
+div[data-testid="metric-container"] label {
+    font-size: 22px !important;
+    font-weight: 600 !important;
+    color: #37474f !important;
+}
 
+/* Metric Value */
+div[data-testid="metric-container"] div {
+    font-size: 42px !important;
+    font-weight: 700 !important;
+    color: #0d47a1 !important;
+}
 
-# -------------------------
-# Session-state to avoid losing results on widget changes (e.g., radio buttons)
-# -------------------------
-current_signature = (
-    uploaded_file.name if uploaded_file is not None else None,
-    getattr(uploaded_file, "size", None) if uploaded_file is not None else None,
-    selected_model_name,
-)
-if st.session_state.get("signature") != current_signature:
-    st.session_state["signature"] = current_signature
-    st.session_state["results"] = None
+/* Tabs Styling */
+button[role="tab"] {
+    font-size: 22px !important;
+    font-weight: 600 !important;
+    color: #37474f !important;
+}
 
+button[role="tab"][aria-selected="true"] {
+    color: white !important;
+    background-color: #1976d2 !important;
+    border-radius: 8px;
+}
 
-# -------------------------
-# Prediction / Evaluation
-# -------------------------
-if run_prediction_button:
-    if uploaded_file is None:
-        st.warning("Please upload a CSV file to run the prediction and evaluation.")
-    else:
+/* Success Message */
+.stSuccess {
+    font-size: 22px !important;
+    font-weight: 600;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# -----------------------------------------------------
+# HEADER
+# -----------------------------------------------------
+# Display BITS logo and student info
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.title("📊 Machine Learning Model Evaluator")
+    st.caption("Interactive classification model comparison dashboard")
+with col2:
+    st.image("Data/BITS_logo.png", width=400)
+    st.markdown("""
+    <div style='background-color:#e8f5e9; padding:12px; border-radius:8px; border-left:4px solid #4caf50; margin-top:10px;'>
+        <p style='margin:0; font-size:16px;'><b>Assignment 2</b></p>
+        <p style='margin:0; font-size:15px;'>Suresha Kantipudi</p>
+        <p style='margin:0; font-size:15px;'>2025aa05409</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.divider()
+
+# -----------------------------------------------------
+# LOAD MODELS
+# -----------------------------------------------------
+@st.cache_resource
+def load_model(path):
+    return joblib.load(path)
+
+models = {
+    "Logistic Regression": load_model("model/logistic_regression.pkl"),
+    "Decision Tree": load_model("model/decision_tree_classifier.pkl"),
+    "KNN": load_model("model/k-nearest_neighbor_classifier.pkl"),
+    "Naive Bayes": load_model("model/naive_bayes_classifier.pkl"),
+    "Random Forest": load_model("model/random_forest_classifier.pkl"),
+    "XGBoost": load_model("model/xgboost_classifier.pkl"),
+}
+
+# -----------------------------------------------------
+# LAYOUT
+# -----------------------------------------------------
+left_col, right_col = st.columns([1, 2])
+
+# =====================================================
+# LEFT PANEL - INPUTS
+# =====================================================
+with left_col:
+    with st.container(border=True):
+
+        st.subheader("📥 Input Configuration")
+
+        # -----------------------------
+        # Download test.csv
+        # -----------------------------
+        st.markdown("#### 📄 Sample Test File")
+
         try:
-            st.subheader("Data Processing and Model Evaluation")
+            with open("Data/test.csv", "rb") as f:
+                test_data = f.read()
 
-            # Read CSV robustly
-            dataframe = read_uploaded_csv(uploaded_file)
+            st.download_button(
+                label="⬇️ Download test.csv",
+                data=test_data,
+                file_name="test.csv",
+                mime="text/csv",
+                width="stretch"
+            )
 
-            if dataframe.empty:
-                st.warning("Uploaded CSV file is empty. Please upload a valid file.")
-                st.stop()
+        except FileNotFoundError:
+            st.warning("Sample test.csv not found in Data folder.")
 
-            if dataframe.shape[1] < 2:
-                st.warning(
-                    "The uploaded CSV file was read as a single column. "
-                    "This usually means the delimiter is not a comma. "
-                    "Try saving as comma-separated, or use a semicolon-separated file (e.g., bank-full.csv)."
-                )
-                st.stop()
+        st.divider()
 
-            # --- Feature Engineering Steps --- #
-            # 1) Target Variable Conversion (assumed last column)
-            last_col = dataframe.columns[-1]
-            if dataframe[last_col].dtype == "object":
-                uniq = set(map(str, dataframe[last_col].dropna().unique()))
-                if uniq.issubset({"yes", "no"}):
-                    dataframe[last_col] = dataframe[last_col].map({"yes": 1, "no": 0})
-                    st.write("Target variable converted from 'yes'/'no' to 1/0.")
+        # Upload CSV
+        uploaded_file = st.file_uploader("Upload Test CSV", type="csv")
 
-            # 2) One-hot encode remaining categorical columns (excluding target if it's still object)
-            #    (We treat the LAST column as target)
-            feature_df = dataframe.iloc[:, :-1]
-            target_series = dataframe.iloc[:, -1]
+        # Model Selection
+        selected_model_name = st.selectbox(
+            "Select Model",
+            list(models.keys())
+        )
 
-            categorical_cols = feature_df.select_dtypes(include="object").columns.tolist()
-            if categorical_cols:
-                feature_df = pd.get_dummies(feature_df, columns=categorical_cols, drop_first=True)
-                st.write(f"Categorical columns {categorical_cols} one-hot encoded.")
+        model_info = {
+            "Logistic Regression": "Linear classifier",
+            "Decision Tree": "Tree-based classifier",
+            "KNN": "Instance-based classifier",
+            "Naive Bayes": "Probabilistic classifier",
+            "Random Forest": "Ensemble of trees",
+            "XGBoost": "Gradient boosting ensemble"
+        }
 
-            X = feature_df.copy()
-            y = target_series.copy()
+        st.info(model_info[selected_model_name])
 
-            if X.shape[0] == 0 or X.shape[1] == 0:
-                st.warning(
-                    "No usable feature columns found after preprocessing. "
-                    "Please ensure your CSV contains feature columns + a target column."
-                )
-                st.stop()
+        run_button = st.button(
+            "🚀 Run Prediction",
+            width="stretch",
+            type="primary"
+        )
 
-            # Keep a copy of X before scaling for display alongside predictions
-            X_display = X.copy()
+# =====================================================
+# RIGHT PANEL - RESULTS
+# =====================================================
+with right_col:
 
-            # 3) Feature Scaling for numerical columns
-            scaler = StandardScaler()
-            numerical_cols_to_scale = X.select_dtypes(include=[np.number]).columns
-            if len(numerical_cols_to_scale) > 0:
-                X[numerical_cols_to_scale] = scaler.fit_transform(X[numerical_cols_to_scale])
-                st.write("Numerical features scaled using StandardScaler.")
-            else:
-                st.write("No numerical features found for scaling.")
+    if run_button and uploaded_file is not None:
 
-            st.write("Data loaded and preprocessed successfully. Features (X) and Target (y) separated.")
+        with st.spinner("Running model prediction..."):
 
-            st.subheader("Uploaded Data (after preprocessing)")
-            st.dataframe(pd.concat([X_display, y.rename("target")], axis=1))
+            df = pd.read_csv(uploaded_file)
 
-            # Retrieve the selected model
+            X = df.iloc[:, :-1]
+            y = df.iloc[:, -1]
+
             model = models[selected_model_name]
-            st.write(f"Making predictions using: **{selected_model_name}**")
-
-            # Predict
             y_pred = model.predict(X)
 
-            # Ensure correct shapes/types
-            y_true_int = to_1d_int(y)
-            y_pred_int = to_1d_int(y_pred)
+            y_prob = None
+            if hasattr(model, "predict_proba"):
+                y_prob = model.predict_proba(X)[:, 1]
 
-            # Save results so UI widgets (radio) don't erase them on rerun
-            st.session_state["results"] = {
-                "X_display": X_display,
-                "y_true": y_true_int,
-                "y_pred": y_pred_int,
-            }
+            accuracy = accuracy_score(y, y_pred)
+            precision = precision_score(y, y_pred, average="weighted", zero_division=0)
+            recall = recall_score(y, y_pred, average="weighted", zero_division=0)
+            f1 = f1_score(y, y_pred, average="weighted", zero_division=0)
+            mcc = matthews_corrcoef(y, y_pred)
 
-        except Exception as e:
-            st.error(f"An error occurred during data processing or prediction: {e}")
-            st.warning("Please ensure your CSV file is properly formatted with numerical features and a target column.")
-            st.session_state["results"] = None
+            auc_score = None
+            if y_prob is not None and len(np.unique(y)) >= 2:
+                auc_score = roc_auc_score(y, y_prob)
 
+        st.success("Model evaluation completed successfully.")
 
-# -------------------------
-# Render results (persists across reruns)
-# -------------------------
-results = st.session_state.get("results")
-if results is not None:
-    X_display = results["X_display"]
-    y_true_int = results["y_true"]
-    y_pred_int = results["y_pred"]
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["📊 Metrics", "📋 Classification Report", "📌 Confusion Matrix & ROC", "📁 Predictions"]
+        )
 
-    predicted_output_df = X_display.copy()
-    predicted_output_df["Prediction"] = y_pred_int
-    st.subheader("Predicted Data with Input Features")
-    st.dataframe(predicted_output_df)
+        # ---------------- METRICS ----------------
+        with tab1:
+            m1, m2, m3 = st.columns(3)
+            m4, m5, m6 = st.columns(3)
 
-    # Add download button for predicted output
-    csv_output = predicted_output_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Download Predicted Output as CSV",
-        data=csv_output,
-        file_name="predicted_output.csv",
-        mime="text/csv",
-    )
+            m1.metric("Accuracy", f"{accuracy:.4f}")
+            m2.metric("Precision", f"{precision:.4f}")
+            m3.metric("Recall", f"{recall:.4f}")
+            m4.metric("F1 Score", f"{f1:.4f}")
+            m5.metric("MCC", f"{mcc:.4f}")
+            m6.metric("AUC", f"{auc_score:.4f}" if auc_score else "N/A")
 
-    st.subheader("Classification Metrics")
-    accuracy = accuracy_score(y_true_int, y_pred_int)
-    # Only calculate AUC if there are at least two unique classes
-    if len(np.unique(y_true_int)) >= 2:
-        auc_score = roc_auc_score(y_true_int, y_pred_int)
-        st.write(f"- **AUC Score**: {auc_score:.4f}")
+        # ---------------- CLASSIFICATION REPORT ----------------
+        with tab2:
+            report_dict = classification_report(
+                y, y_pred,
+                output_dict=True,
+                zero_division=0
+            )
+            report_df = pd.DataFrame(report_dict).transpose()
+            st.dataframe(report_df.style.format("{:.3f}"), width="stretch")
+
+        # ---------------- CONFUSION MATRIX & ROC ----------------
+        with tab3:
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Confusion Matrix")
+
+                cm = confusion_matrix(y, y_pred)
+
+                fig, ax = plt.subplots()
+                sns.heatmap(
+                    cm,
+                    annot=True,
+                    fmt="d",
+                    cmap="Blues",
+                    annot_kws={"size": 16},
+                    ax=ax
+                )
+                ax.set_xlabel("Predicted")
+                ax.set_ylabel("Actual")
+                st.pyplot(fig)
+
+            with col2:
+                if y_prob is not None and len(np.unique(y)) >= 2:
+                    st.subheader("ROC Curve")
+
+                    fpr, tpr, _ = roc_curve(y, y_prob)
+
+                    fig2, ax2 = plt.subplots()
+                    ax2.plot(fpr, tpr, label=f"AUC = {auc_score:.3f}")
+                    ax2.plot([0,1], [0,1], linestyle="--")
+                    ax2.set_xlabel("False Positive Rate")
+                    ax2.set_ylabel("True Positive Rate")
+                    ax2.legend()
+                    st.pyplot(fig2)
+
+        # ---------------- PREDICTIONS ----------------
+        with tab4:
+            result_df = X.copy()
+            result_df["Prediction"] = y_pred
+
+            st.dataframe(result_df.head(), width="stretch")
+
+            csv = result_df.to_csv(index=False).encode("utf-8")
+
+            st.download_button(
+                "📥 Download Full Predictions",
+                data=csv,
+                file_name="predictions.csv",
+                mime="text/csv",
+                width="stretch"
+            )
+
+            if selected_model_name in ["Random Forest", "XGBoost"]:
+                st.subheader("Top 10 Feature Importances")
+
+                importances = model.feature_importances_
+                feat_df = pd.DataFrame({
+                    "Feature": X.columns,
+                    "Importance": importances
+                }).sort_values("Importance", ascending=False).head(10)
+
+                st.bar_chart(feat_df.set_index("Feature"))
+
     else:
-        st.write("- **AUC Score**: N/A (requires at least two classes)")
-    precision = precision_score(y_true_int, y_pred_int, average="weighted", zero_division=0)
-    recall = recall_score(y_true_int, y_pred_int, average="weighted", zero_division=0)
-    f1 = f1_score(y_true_int, y_pred_int, average="weighted", zero_division=0)
-    mcc_score = matthews_corrcoef(y_true_int, y_pred_int)
+        st.markdown("""
+        <div style='padding:20px; border-radius:10px; background-color:#eef2f7;'>
+        <h4>📂 Awaiting Input</h4>
+        Upload a dataset and click <b>Run Prediction</b> to view results.
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.write(f"- **Accuracy**: {accuracy:.4f}")
-    st.write(f"- **Precision (weighted)**: {precision:.4f}")
-    st.write(f"- **Recall (weighted)**: {recall:.4f}")
-    st.write(f"- **F1-Score (weighted)**: {f1:.4f}")
-    st.write(f"- **Matthews Correlation Coefficient (MCC)**: {mcc_score:.4f}")
-
-    st.subheader("Detailed Evaluation")
-    report_type = st.radio("Choose detailed report type:", ("Classification Report", "Confusion Matrix"))
-
-    if report_type == "Classification Report":
-        st.text("Classification Report:")
-        st.code(classification_report(y_true_int, y_pred_int, zero_division=0))
-    else:
-        st.text("Confusion Matrix:")
-
-        # Robust label handling:
-        all_labels = np.union1d(np.unique(y_true_int), np.unique(y_pred_int)).astype(int)
-
-        if len(all_labels) < 2:
-            st.info(f"Cannot generate a meaningful confusion matrix for a single class. Only class(es) found: {', '.join(map(str, all_labels))}")
-            st.write(f"True counts: {pd.Series(y_true_int).value_counts().to_dict()}")
-            st.write(f"Predicted counts: {pd.Series(y_pred_int).value_counts().to_dict()}")
-        else:
-            cm = confusion_matrix(y_true_int, y_pred_int, labels=all_labels)
-
-            fig, ax = plt.subplots()
-            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=all_labels)
-            disp.plot(ax=ax, cmap="Blues", values_format="d", colorbar=False)
-            ax.set_title("Confusion Matrix")
-            st.pyplot(fig)
-            plt.close(fig)
+# -----------------------------------------------------
+# FOOTER
+# -----------------------------------------------------
+st.divider()
+st.caption("Developed by Suresha Kantipudi | BITS Pilani | ML Assignment 2")
